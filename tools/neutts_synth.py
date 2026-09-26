@@ -74,4 +74,20 @@ def main():
 
 
 if __name__ == "__main__":
+    # tts_tool_local.py spawns this file as `[sys.executable, neutts_synth.py, …]`,
+    # so the child is a fresh interpreter on a PM-managed install: the store
+    # Python, carrying no third-party packages. Everything below (numpy, neutts,
+    # soundfile) lives in the generation the bootstrap selects.
+    #
+    # sys.path[0] is this file's own directory (tools/), not the repo root, so
+    # hermes_bootstrap is NOT importable until the root is on the path. Without
+    # this insert the narrow `except` below would swallow the ModuleNotFoundError
+    # and the bootstrap would never run — the fix would look applied and change
+    # nothing. Same order as tools/bot_mode_dm.py.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    try:
+        import hermes_bootstrap  # noqa: F401
+    except ModuleNotFoundError as exc:
+        if exc.name != "hermes_bootstrap":
+            raise
     main()
