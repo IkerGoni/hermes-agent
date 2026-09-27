@@ -1793,6 +1793,91 @@ class TestProfileArg:
         assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
 
 
+class TestLaunchdPlistDoesNotPinHermesBin:
+    """The launchd job must NOT pin ``HERMES_BIN`` — a deliberate decision, pinned here.
+
+    A ``HERMES_BIN`` key in the plist looks like the fix for a dispatcher that
+    used to crash with ``ModuleNotFoundError: No module named 'hermes_cli'``, and
+    a live plist carried one — hand-written, so the next ``hermes gateway
+    install`` silently dropped it and the invariant was never in the generator at
+    all. Measured 2026-09-27, both ``_resolve_hermes_argv()`` branches succeed
+    from a launchd-like environment (``env -i`` with the generated PATH, cwd
+    outside the checkout): shim branch ``rc=0``, module branch ``rc=0``. So
+    emitting the key fixes no crash, and costs real durability:
+
+    * ``HERMES_BIN`` short-circuits the resolver to ``[<path>]`` — argv[0]
+      alone, with no ``sys.path`` seeding. Self-containment is what commits
+      ``0d6f48e2d8``/``cdb637d02c`` bought; the shim branch re-breaks it.
+    * The published shim hardcodes an absolute interpreter
+      (``~/.hermes/tools/python-<build>/bin/python3``), a PM tool-store entry
+      ``hermes update`` may prune, while the module form binds ``sys.executable``
+      — alive by definition for the running dispatcher.
+
+    Three keys are correct (PATH, HERMES_HOME, HERMES_SUPERVISED_CHILD). This
+    pins that count so nobody "helpfully" re-adds the rot, and pins that the
+    pinned absence still yields a WORKING argv rather than a merely
+    well-shaped one.
+    """
+
+    @pytest.fixture
+    def launchd_plist(self, tmp_path, monkeypatch):
+        """A regenerated plist, with home and interpreter isolated like its neighbours."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
+        # The env dict is the whole point of the test, so the command that reaches
+        # for the interpreter must not vary with the host: PM's store lookup
+        # stats this checkout's parent, which is the real ~/.hermes on a dev
+        # machine and trips the hermetic-home guard (the neighbouring
+        # ``test_launchd_plist_wraps_gateway_stderr_with_timestamps`` hits it
+        # too). Pin the one call that decides "store shim vs runtime command".
+        from hermes_cli import _launchers
+
+        monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: None)
+        return plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+
+    def test_generated_plist_env_omits_hermes_bin(self, launchd_plist):
+        env = launchd_plist["EnvironmentVariables"]
+        assert "HERMES_BIN" not in env, (
+            "the generator must not pin HERMES_BIN: it overrides the resolver's "
+            "self-contained module form with a GC-rotting hardcoded shim"
+        )
+        # Exactly the three keys the gateway job needs, by name.
+        assert set(env) == {"PATH", "HERMES_HOME", "HERMES_SUPERVISED_CHILD"}, env
+
+    def test_env_without_hermes_bin_resolves_to_a_runnable_argv(self, launchd_plist, tmp_path):
+        """The pinned absence must leave an argv that RUNS, or the absence is a bug."""
+        import shutil
+        from unittest import mock
+
+        from hermes_cli import kanban_db_dispatch as kbd
+
+        # Resolve exactly as the regenerated job's environment would: the
+        # generated keys, and no HERMES_BIN.
+        env = dict(launchd_plist["EnvironmentVariables"])
+        assert "HERMES_BIN" not in env
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch.object(shutil, "which", return_value=None):
+                argv = kbd._resolve_hermes_argv()
+
+        assert argv == kbd._module_hermes_argv(), (
+            f"without HERMES_BIN the resolver must stay on the self-contained "
+            f"module form, got {argv}"
+        )
+        # Shaped correctly is not enough: it has to actually run.
+        result = subprocess.run(
+            argv + ["--version"], capture_output=True, text=True, timeout=60,
+            cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, (
+            f"`--version` under the plist env failed (rc={result.returncode}); "
+            f"stderr={result.stderr[:200]!r}"
+        )
+
+
 class TestRemapPathForUser:
     """Unit tests for _remap_path_for_user()."""
 
