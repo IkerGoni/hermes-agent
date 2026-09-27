@@ -334,4 +334,42 @@ class TestCLI:
         assert titlesD == []
 
 
+# ---------------------------------------------------------------------------
+# Board listing must count each board's OWN tasks (t_5ea3d7e3, card t_d4549d19)
+#
+# ``_board_task_counts`` opened the DB with ``board=``, but ``kanban_db_path``
+# consults ``HERMES_KANBAN_DB`` FIRST — the pin the dispatcher injects into
+# workers. Inside a worker every board therefore reported the pinned board's
+# numbers (``jobscout`` showed ``done=25`` while the real count was 285).
+# ---------------------------------------------------------------------------
+
+class TestBoardTaskCounts:
+    @staticmethod
+    def _seed(fresh_home):
+        kb.create_board("second")
+        with kbc.connect(board="second") as conn:
+            for i in range(3):
+                kb.create_task(conn, title=f"second-{i}")
+        with kbc.connect() as conn:
+            for i in range(5):
+                kb.create_task(conn, title=f"default-{i}")
+
+    def test_board_counts_ignore_db_env_pin(self, fresh_home, monkeypatch):
+        """A5: with the pin set, each board still reports its own real counts."""
+        self._seed(fresh_home)
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="default")))
+
+        from hermes_cli import kanban_boards as kbb
+        assert kbb._board_task_counts("second") == {"ready": 3}
+        assert kbb._board_task_counts("default") == {"ready": 5}
+
+    def test_missing_board_does_not_borrow_pinned_counts(self, fresh_home, monkeypatch):
+        """A board with no DB must report nothing, not the pinned board's rows."""
+        self._seed(fresh_home)
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="default")))
+
+        from hermes_cli import kanban_boards as kbb
+        assert kbb._board_task_counts("no-such-board") == {}
+
+
 

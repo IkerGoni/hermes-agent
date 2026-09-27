@@ -516,6 +516,18 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 
+def unpinned_kanban_db_path(board: Optional[str] = None) -> Path:
+    """``kanban_db_path`` for callers that mean the board they NAMED.
+
+    Identical layout, but ``HERMES_KANBAN_DB`` is ignored: the pin exists to
+    route a worker to its own board, so a cross-board view (listing every
+    board's counts) must not resolve through it — otherwise every board reports
+    the pinned board's numbers. Callers writing to the board they were given
+    should keep using ``kanban_db_path`` (t_d4549d19).
+    """
+    return _board_path(None, board, ("kanban.db",), "kanban.db")
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
     ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
@@ -2732,19 +2744,24 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
 ) -> bool:
-    """``running|ready|blocked|review -> done``; records ``result``.
+    """``running|ready|blocked|review|triage -> done``; records ``result``.
 
     ``ready`` is accepted for manual CLI completion, ``review`` for human
     approval. A ``running`` task under a live claim is only completed with
     proof of ownership (``expected_run_id``) or ``force=True`` (explicit
     operator override) — otherwise :class:`LiveClaimError`, the same fence
-    :func:`request_review` applies. With no active run the handoff fields survive via
+    :func:`request_review` applies. ``force=True`` is ALSO the only way to
+    close a ``triage`` card: ``triage`` means "needs human judgement", so an
+    incidental ``complete`` must never close one (t_d4549d19). With no active
+    run the handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
     ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
-    Completions from non-review statuses need evidence: a stripped ``result``
+    Completions from non-review statuses need evidence — including from
+    ``triage`` under ``force``, which opens the door but waives nothing: a
+    stripped ``result``
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
@@ -2791,9 +2808,13 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
+                   AND (status IN ('running', 'ready', 'blocked', 'review')
+                        OR (status = 'triage' AND ? = 1))
                 """
-        params: tuple = (result, now, task_id)
+        # ``triage`` means "needs human judgement", so it is NOT in the plain
+        # whitelist: only an explicit operator override (force=True) may close
+        # one, and the evidence gate above still applies to it.
+        params: tuple = (result, now, task_id, 1 if force else 0)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
@@ -3891,11 +3912,14 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     lock. Post-release kill is safe here because ``archived`` is terminal: no
     dispatcher can spawn a duplicate worker off the released claim. The
     termination outcome lands as its own ``archive_worker_termination`` event so
-    the ``archived`` event stays atomic with the status flip.
+    the ``archived`` event stays atomic with the status flip. The ``archived``
+    event also seals ``{status, result_preview}`` from the card as it was
+    archived, so archiving cannot silently discard the evidence a card already
+    carried (t_d4549d19).
     """
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, result, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if not row:
@@ -3914,7 +3938,14 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             conn, task_id, outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        # Archiving is the only exit a ``triage`` card used to have, and the
+        # UPDATE above leaves ``result`` untouched — so a card archived as a
+        # workaround lost the very evidence that made it archivable. Seal what
+        # it carried into the event; the full text stays on the task row.
+        payload = {"status": row["status"]}
+        if _substantive_text(row["result"]):
+            payload["result_preview"] = _first_line(row["result"], 200)
+        _append_event(conn, task_id, "archived", payload, run_id=run_id)
     if was_running:
         termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
         with write_txn(conn):
