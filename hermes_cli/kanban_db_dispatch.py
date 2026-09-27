@@ -2442,10 +2442,56 @@ def _rotate_worker_log(
         pass
 
 
+def _hermes_repo_root() -> Optional[str]:
+    """Absolute path of the tree THIS process runs from, or ``None`` if it
+    cannot be determined (a frozen/relocated install with no ``__file__``).
+
+    A worker inherits neither the dispatcher's ``sys.path`` nor its cwd (the
+    spawn pins ``cwd=<task workspace>`` on purpose — #41312, #34619), so the
+    argv has to carry this itself.
+    """
+    try:
+        return str(Path(__file__).resolve().parent.parent)
+    except (NameError, OSError):  # pragma: no cover - frozen loader
+        return None
+
+
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    """Interpreter-bound, SELF-CONTAINED Hermes CLI invocation
+    (``hermes_cli.main`` is the console-script target — there is no top-level
+    ``hermes`` package).
+
+    A bare ``[sys.executable, "-m", "hermes_cli.main"]`` only resolves
+    ``hermes_cli`` when the child's ``sys.path`` already knows the tree, and
+    for ``-m`` that path is the CWD. The dispatcher spawns every worker with
+    ``cwd=<task workspace>`` (a directory that is not the checkout) and
+    ``build_subprocess_env`` strips Hermes-owned ``PYTHONPATH`` entries on
+    purpose (``_strip_hermes_owned_pythonpath``), so a bare ``-m`` child is
+    born with no route to ``hermes_cli`` and dies at startup with
+    ``ModuleNotFoundError`` — which is not even a crash the dispatcher can
+    read, because the failure happens before the worker exists.
+
+    So the argv carries its own activation, exactly like the published shim
+    (``hermes_cli._launchers.runtime_command``): isolated mode (``-I``, so no
+    ambient ``PYTHONPATH``/``VIRTUAL_ENV`` can inject anything), the tree
+    inserted at the front of ``sys.path``, ``hermes_bootstrap`` imported so
+    PM selects a dependency generation before the first third-party import,
+    then ``runpy.run_module(..., alter_sys=True)`` so ``hermes_cli.main`` runs
+    as ``__main__`` and keeps its ``if __name__ == "__main__"`` block. The
+    cwd stays the workspace: the argv, not the cwd, is what locates Hermes.
+    """
+    root = _hermes_repo_root()
+    if root is None:  # pragma: no cover - frozen loader
+        return [sys.executable, "-m", "hermes_cli.main"]
+    bootstrap = (
+        "import os, sys, runpy; "
+        "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
+        "os.environ.pop('VIRTUAL_ENV', None); "
+        f"sys.path.insert(0, {root!r}); "
+        "import hermes_bootstrap; "
+        "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+    )
+    return [sys.executable, "-I", "-c", bootstrap]
 
 
 def _absolute_hermes_path(path: str) -> str:

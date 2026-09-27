@@ -1562,7 +1562,13 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    # Bind this install, not a literal argv spelling: the module form is
+    # self-contained (it puts the tree on the child's own sys.path), and
+    # pinning the old `[… , "-m", "hermes_cli.main"]` shape is what let a
+    # cwd-dependent argv ship. ``test_module_hermes_argv_starts_worker_from_a
+    # _non_repo_cwd`` is the assertion that actually runs the child.
+    assert kbd._resolve_hermes_argv() == kbd._module_hermes_argv()
+    assert kbd._resolve_hermes_argv()[0] == sys.executable
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
@@ -1593,6 +1599,107 @@ def test_resolve_hermes_argv_module_actually_runs():
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
+
+
+def test_module_hermes_argv_starts_worker_from_a_non_repo_cwd(tmp_path):
+    """The resolved argv must be SELF-CONTAINED, and must not need an env var
+    the dispatcher was started without.
+
+    Two facts make every in-process assertion blind here, so this spawns the
+    child for real:
+
+    * The dispatcher sets ``cwd=workspace`` (#41312, #34619) — a task
+      workspace that is NOT the checkout — and ``build_subprocess_env``
+      strips Hermes-owned ``PYTHONPATH`` entries on purpose
+      (``_strip_hermes_owned_pythonpath``). So a bare ``-m`` child is born
+      with no route to ``hermes_cli``. In-process, ``sys.path[0]`` is already
+      the repo and ``find_spec("hermes_cli")`` is True, so
+      ``test_resolve_...`` above stays green while no real worker ever boots.
+    * ``$HERMES_BIN`` is read from the DISPATCHER's own env, not the child's,
+      and ``launchctl setenv`` only reaches processes started later. A daemon
+      that has been up for hours keeps the unset value forever, so the argv
+      must boot with ``HERMES_BIN`` absent — the fallback path is the only
+      one that can be relied on, and it is the one that used to crash with
+      ``ModuleNotFoundError: No module named 'hermes_cli'`` before the worker
+      process existed (so the dispatcher could not even read a crash).
+
+    Asserted with the repo off ``PYTHONPATH`` and ``HERMES_BIN`` unset, from
+    a directory that contains no Hermes code.
+    """
+    import shutil
+    import subprocess
+    from unittest import mock
+
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    # A task workspace: a real, empty, absolute directory outside the repo.
+    workspace = tmp_path / "task-ws"
+    workspace.mkdir()
+    assert not (workspace / "hermes_cli").exists()
+
+    # Resolve exactly as a dispatcher with HERMES_BIN unset would: no PATH
+    # shim to fall back on either.
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HERMES_BIN", None)
+        with mock.patch.object(shutil, "which", return_value=None):
+            argv = kbd._resolve_hermes_argv()
+    assert argv == kbd._module_hermes_argv(), "unexpected argv for an unset HERMES_BIN"
+    assert argv[0] == sys.executable, f"must bind THIS install: {argv[0]}"
+
+    # Mirror the dispatcher's child env: only a foreign dir survives on
+    # PYTHONPATH, and it carries no ``hermes_cli``.
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "HERMES_BIN")}
+    foreign = tmp_path / "foreign-libs"
+    foreign.mkdir()
+    env["PYTHONPATH"] = str(foreign)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    r = subprocess.run(
+        [*argv, "--version"],
+        cwd=str(workspace),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert r.returncode == 0, (
+        f"worker argv did not start with cwd=<task workspace> and no HERMES_BIN: "
+        f"rc={r.returncode}\nstdout={r.stdout[:400]!r}\nstderr={r.stderr[:600]!r}"
+    )
+    assert "Hermes Agent" in r.stdout, f"child booted but printed no version: {r.stdout[:400]!r}"
+
+
+def test_non_repo_cwd_alone_cannot_import_hermes_cli(tmp_path):
+    """Control for the test above: a bare child in that same env has NO way to
+    reach ``hermes_cli``.
+
+    Without this, the fix could be \"it worked\" for a reason that has nothing
+    to do with the argv — an editable install, a ``.pth`` file, a sitecustomize
+    — and the real regression would stay hidden while the test stayed green.
+    The isolation must be genuine for the assertion to mean anything.
+    """
+    import subprocess
+
+    workspace = tmp_path / "task-ws"
+    workspace.mkdir()
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "HERMES_BIN")}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    r = subprocess.run(
+        [sys.executable, "-c", "import hermes_cli"],
+        cwd=str(workspace),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert r.returncode != 0, (
+        "this environment resolves hermes_cli unaided, so the argv test above "
+        f"cannot prove the argv is self-contained: {r.stdout!r}"
+    )
+    assert "No module named 'hermes_cli'" in r.stderr
 
 
 # ---------------------------------------------------------------------------
