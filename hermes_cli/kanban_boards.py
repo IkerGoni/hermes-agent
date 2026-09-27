@@ -23,11 +23,18 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
 
 
 def _board_task_counts(slug: str) -> dict[str, int]:
-    """``{status: count}`` for a board. Safe to call on an empty DB."""
+    """``{status: count}`` for a board. Safe to call on an empty DB.
+
+    Opened by explicit ``db_path``, not ``board=``: ``kanban_db_path`` consults
+    ``HERMES_KANBAN_DB`` first, and the dispatcher pins that var inside workers,
+    so a ``board=`` open reported the PINNED board's counts for every row of the
+    listing. ``connect()`` prioritises ``db_path`` over the env (t_d4549d19).
+    """
     try:
-        if not kb.kanban_db_path(board=slug).exists():
+        db_path = kb.unpinned_kanban_db_path(board=slug)
+        if not db_path.exists():
             return {}
-        with kbc.connect_closing(board=slug) as conn:
+        with kbc.connect_closing(db_path=db_path) as conn:
             rows = conn.execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").fetchall()
         return {r["status"]: int(r["n"]) for r in rows}
     except Exception:

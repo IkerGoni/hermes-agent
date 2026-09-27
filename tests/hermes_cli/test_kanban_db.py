@@ -2032,3 +2032,90 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+# ---------------------------------------------------------------------------
+# triage escape route: closing a triage card that waits on human judgement
+# (t_5ea3d7e3, card t_d4549d19). ``triage`` means "needs a human decision",
+# so ``done`` is reachable only with an explicit operator ``force`` — and only
+# with evidence, unlike ``review`` approvals which a human vouches for.
+# ---------------------------------------------------------------------------
+
+
+def _triage_task(conn, title: str) -> str:
+    """Create a card and park it in ``triage`` the way the recurrence router does."""
+    tid = kb.create_task(conn, title=title, assignee="a")
+    conn.execute("UPDATE tasks SET status = 'triage' WHERE id = ?", (tid,))
+    conn.commit()
+    return tid
+
+
+def test_triage_requires_force_to_complete(kanban_home):
+    """A1: triage + complete without force stays refused (no escape by accident)."""
+    with kbc.connect() as conn:
+        tid = _triage_task(conn, "waiting on a human")
+        assert kb.complete_task(conn, tid, result="some text") is False
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_triage_completes_with_force_and_evidence(kanban_home):
+    """A2: the escape route — operator force + evidence closes it, result kept."""
+    with kbc.connect() as conn:
+        tid = _triage_task(conn, "work already done")
+        assert kb.complete_task(conn, tid, result="work verified in main", force=True) is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "done"
+        assert task.result == "work verified in main"
+
+
+def test_triage_completes_not_without_force_even_with_evidence(kanban_home):
+    """A3 (protects a legitimate triage card waiting on a real decision):
+    evidence alone must not close it — that would be the bug, renamed."""
+    with kbc.connect() as conn:
+        tid = _triage_task(conn, "4006 live memory rows need an ownership decision")
+        assert kb.complete_task(conn, tid, result="looks fine to me") is False
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_triage_force_still_requires_evidence(kanban_home):
+    """A4 (R2): force opens the door but does not waive the evidence gate."""
+    with kbc.connect() as conn:
+        tid = _triage_task(conn, "no evidence here")
+        with pytest.raises(kb.EmptyCompletionError):
+            kb.complete_task(conn, tid, result="   ", force=True)
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_archive_preserves_result_in_event(kanban_home):
+    """C2: archiving must not be the lossy escape — the evidence it already
+    carried is sealed into the ``archived`` event before the card normalizes."""
+    with kbc.connect() as conn:
+        tid = _triage_task(conn, "finished but stranded")
+        conn.execute("UPDATE tasks SET result = ? WHERE id = ?", ("shipped in main", tid))
+        conn.commit()
+        assert kb.archive_task(conn, tid) is True
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'archived'",
+            (tid,),
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(row["payload"]) if row["payload"] else {}
+        assert payload.get("status") == "triage"
+        # Capped first line (200 chars), the same shape
+        # ``completion_blocked_empty_result`` uses, so the preview stays an
+        # event-sized excerpt while the full text remains on the task row.
+        assert payload.get("result_preview") == "shipped in main"
+        assert kb.get_task(conn, tid).result == "shipped in main"
+
+
+def test_archive_of_card_without_result_leaves_event_clean(kanban_home):
+    """C2 must not invent evidence: a card with no result archives with none."""
+    with kbc.connect() as conn:
+        tid = _triage_task(conn, "nothing recorded")
+        assert kb.archive_task(conn, tid) is True
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'archived'",
+            (tid,),
+        ).fetchone()
+        payload = json.loads(row["payload"]) if row and row["payload"] else {}
+        assert not payload.get("result_preview")

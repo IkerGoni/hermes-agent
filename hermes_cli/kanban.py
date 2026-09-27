@@ -891,6 +891,12 @@ def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: 
     return None
 
 
+def _status_of(conn, tid: str) -> Optional[str]:
+    """``tid``'s current status, or None when the id is unknown."""
+    task = kb.get_task(conn, tid)
+    return task.status if task is not None else None
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids, rc = _require_ids(args)
@@ -938,6 +944,15 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                     detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
                     fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
                                      f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
+                elif _status_of(conn, tid) == "triage":
+                    # ``triage`` needs an explicit operator close; without this
+                    # hint the generic "terminal state" wording is what made
+                    # the dead-end look permanent (t_d4549d19).
+                    fail_msg[tid] = (
+                        f"cannot complete {tid}: it is in triage, which closes only on an explicit "
+                        f"operator override. Re-run with --force and --result/--summary naming what "
+                        f"was done, if the work is already finished."
+                    )
             return done
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
