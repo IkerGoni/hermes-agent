@@ -1655,8 +1655,16 @@ def test_module_hermes_argv_starts_worker_from_a_non_repo_cwd(tmp_path):
     env["PYTHONPATH"] = str(foreign)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
 
+    # ``-S`` is an INTERPRETER flag, so it has to sit with the argv's own
+    # flags (right after argv[0]) — appended at the end it would reach
+    # ``hermes`` as a command-line argument and be rejected as unknown.
+    # Skipping ``site`` is what makes this assertion about the ARGV and not
+    # about the machine: without it a test env's ``__editable__`` .pth
+    # resolves ``hermes_cli`` unaided and the test passes vacuously. See the
+    # control test below.
+    spawn_argv = [argv[0], "-S", *argv[1:], "--version"]
     r = subprocess.run(
-        [*argv, "--version"],
+        spawn_argv,
         cwd=str(workspace),
         env=env,
         capture_output=True,
@@ -1678,6 +1686,14 @@ def test_non_repo_cwd_alone_cannot_import_hermes_cli(tmp_path):
     to do with the argv — an editable install, a ``.pth`` file, a sitecustomize
     — and the real regression would stay hidden while the test stayed green.
     The isolation must be genuine for the assertion to mean anything.
+
+    ``-S`` (skip ``site``) is what makes that isolation GENUINE rather than
+    ambient: a test env built by ``uv sync`` — the dev venv and CI's
+    ``setup-pm`` alike — installs ``__editable__.hermes_agent``, a ``.pth`` that
+    ``site`` executes, so without ``-S`` this leg passes vacuously-or-fails
+    depending on the machine. Shipped payloads prune those ``.pth`` files
+    (``pm.environment.prune_site_pth``) precisely so ``hermes_cli`` does not
+    resolve unaided; ``-S`` reproduces the payload's view in any environment.
     """
     import subprocess
 
@@ -1688,7 +1704,7 @@ def test_non_repo_cwd_alone_cannot_import_hermes_cli(tmp_path):
     env["PYTHONDONTWRITEBYTECODE"] = "1"
 
     r = subprocess.run(
-        [sys.executable, "-c", "import hermes_cli"],
+        [sys.executable, "-S", "-c", "import hermes_cli"],
         cwd=str(workspace),
         env=env,
         capture_output=True,
