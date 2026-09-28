@@ -311,10 +311,18 @@ def _kb_completed(task, payload: dict, title: str) -> str:
     return f" done — {title}{handoff}"
 
 
+_NO_LIMIT = "no runtime limit reported"
+
+
 def _kb_timed_out(task, payload: dict, title: str) -> str:
-    with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+    # Never invent a number: the dispatcher omits ``limit_seconds`` when the card
+    # has no cap, and printing 0 for it read as "killed after 0s" — sending us to
+    # debug a card that was healthy. A real 0 still prints 0; that is a different fact.
+    try:
+        limit = int(payload["limit_seconds"])
+    except (KeyError, TypeError, ValueError):
+        return f" timed out ({_NO_LIMIT}); will retry"
+    return f" timed out (max_runtime={limit}s); will retry"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
@@ -456,15 +464,6 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
                       **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
 
 
-def _background_notifications_off(session: dict) -> bool:
-    """Whether the owning profile set ``display.background_process_notifications: off``. Same
-    gate the messaging gateway applies to its process-event injection; only ``off`` matters
-    here (the other modes shape gateway chat receipts, not agent wakes)."""
-    with _session_profile_runtime_scope(session):
-        raw = (_load_cfg().get("display") or {}).get("background_process_notifications")
-    return raw is False or str(raw or "").strip().lower() == "off"
-
-
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
@@ -479,16 +478,8 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # from the reaper, keeps its lease, and never reaches its bot mailbox again.
         _notif_release_turn(session)
         return
-    evt_type = evt.get("type")
-    kwargs: dict = {}
-    if evt_type == "async_delegation":
-        kwargs = {"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
-    elif evt_type == "heartbeat":
-        # Model-facing scaffolding: the process row on the status stack already says it is running,
-        # so the wake never paints as a user bubble (Desktop, TUI and the transcript preview all
-        # honour ``hidden``). Only what the agent says about the new output is visible.
-        from tools.process_registry_notifications import HEARTBEAT_DISPLAY_KIND
-        kwargs = {"display_kind": HEARTBEAT_DISPLAY_KIND}
+    kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
+              if evt.get("type") == "async_delegation" else {})
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
@@ -549,10 +540,6 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": display_text}),
                             platform="tui", diagnostic=diagnostic_process_event(evt))
         emitted.add(dedup_key)
-    if evt_type != "async_delegation" and _background_notifications_off(session):
-        # The user opted out of process-driven agent wakes: the status row above is the whole
-        # delivery. Subagent results are not process notifications and still land.
-        return True
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
         return True
