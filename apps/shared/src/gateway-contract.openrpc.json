@@ -38431,6 +38431,18 @@
             ],
             "default": null,
             "title": "Output Summary"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
           }
         },
         "title": "VerificationEvidenceRow",
