@@ -140,14 +140,36 @@ def _transaction():
     return transaction(_connect())
 
 
+def _stamp_schema_version(conn: sqlite3.Connection) -> None:
+    """Record this module's schema version without ever moving it backwards.
+
+    Every process that opens the ledger runs ``_ensure_schema``, and they do not
+    all carry the same constant: a worker imported before the task_id migration
+    has ``_VERIFY_SCHEMA_VERSION = 1`` and would stamp that over a ledger the
+    migration had already advanced to 2. The marker would then describe a schema
+    one column behind the one the database actually has — the same
+    "documentation that disagrees with reality" failure the column itself had.
+
+    Keeping the higher of the two means an older process leaves the marker alone
+    instead of clobbering it.
+    """
+    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    try:
+        stored = int(row[0]) if row else 0
+    except (TypeError, ValueError):
+        stored = 0
+    version = max(stored, _VERIFY_SCHEMA_VERSION)
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+        (str(version),),
+    )
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     for ddl in _SCHEMA_DDL:
         conn.execute(ddl)
     _migrate_legacy_columns(conn)
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
-        (str(_VERIFY_SCHEMA_VERSION),),
-    )
+    _stamp_schema_version(conn)
     conn.commit()
 
 
