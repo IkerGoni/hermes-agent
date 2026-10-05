@@ -2609,6 +2609,26 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
+def _worker_iteration_budget_arg(max_iterations: Optional[int]) -> Optional[str]:
+    """Return the card's ``--max-turns`` value, or ``None`` to leave the flag off.
+
+    Same contract as :func:`_worker_terminal_timeout_env` for the other per-card cap:
+    a real budget becomes a string, anything else returns ``None`` so the flag is
+    never added. Rejecting ``<= 0`` matters — ``resolve_turn_limit`` reads it as
+    "unlimited" (``TURN_LIMIT_UNLIMITED``), so a 0 that meant "unset" would hand the
+    worker an unbounded turn instead of no override.
+    """
+    if max_iterations is None:
+        return None
+    try:
+        budget = int(max_iterations)
+    except (TypeError, ValueError):
+        return None
+    if budget <= 0:
+        return None
+    return str(budget)
+
+
 def _worker_terminal_timeout_env(
     max_runtime_seconds: Optional[int],
     current_timeout: Optional[str],
@@ -2768,6 +2788,15 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     # model at a different depth.
     if task.reasoning_effort:
         cmd.extend(["--reasoning", task.reasoning_effort])
+    # Per-card iteration budget, as a CLI arg rather than HERMES_MAX_ITERATIONS:
+    # ``_init_turn_limits`` resolves the cap as "CLI arg > config > env var", so
+    # a profile that already sets ``agent.max_turns`` (the common case — 220 on the
+    # builder profile) would silently shadow the env var and the card would get the
+    # profile default anyway. The flag is the only channel that actually wins, and it
+    # shows up in ``ps`` next to the worker's other pins.
+    card_budget = _worker_iteration_budget_arg(task.max_iterations)
+    if card_budget is not None:
+        cmd.extend(["--max-turns", card_budget])
     worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
