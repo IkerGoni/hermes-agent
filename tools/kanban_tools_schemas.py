@@ -463,6 +463,17 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "dispatcher SIGTERMs the worker and re-queues the "
                 "task with outcome='timed_out'."
         )),
+        "max_iterations": _prop("integer", (
+                "Per-task iteration budget — the agent-turn cap that "
+                "decides when a worker is done. Defaults to the profile's "
+                "agent.max_turns. Set it when you can tell the card needs "
+                "more room than that default allows (a full test suite, a "
+                "long refactor): a card that exhausts its budget can still "
+                "be reported as failed with its work delivered-but-uncommitted. "
+                "Non-positive values are ignored, so 0/negative do NOT mean "
+                "'unlimited' here. Distinct from goal_max_turns, which caps "
+                "turns of a goal_mode judge loop."
+        )),
         "initial_status": {
             "type": "string",
             "enum": ["running", "blocked"],

@@ -729,6 +729,13 @@ class Task:
     reasoning_effort: Optional[str] = None   # VALID_REASONING_EFFORTS | "none"; NULL = profile's
     # Breaker trip count; None -> ``kanban.failure_limit`` -> DEFAULT_FAILURE_LIMIT.
     max_retries: Optional[int] = None
+    # Per-card iteration budget (the cap that decides "this worker is done": see
+    # ``agent/iteration_budget.py``). None -> the profile's ``agent.max_turns``.
+    # Only a strictly positive value is dispatched; 0/negative are inert so a card
+    # can never hand a worker the "unlimited" reading of ``resolve_turn_limit`` by
+    # accident. Measured 2026-09-27: one card delivered its work and was still
+    # reported failed at 220/220, another lost correct work uncommitted at the same wall.
+    max_iterations: Optional[int] = None
     # ``/goal``-style loop: a judge re-checks each turn IN THE SAME SESSION until
     # done / budget exhausted (-> kanban_block); ``goal_max_turns`` None -> goals default.
     goal_mode: bool = False
@@ -767,7 +774,7 @@ _TASK_REQUIRED_COLUMNS = (
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "session_id", "completion_contract", "max_iterations",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -943,6 +950,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
     max_retries          INTEGER,
+    -- Per-card iteration budget — the cap that decides "this worker is
+    -- done" (``agent/iteration_budget.py``). NULL = the profile's
+    -- ``agent.max_turns`` stays the authority, so a card that doesn't ask
+    -- for a budget dispatches exactly as before. Only a strictly positive
+    -- value is exported to the worker.
+    max_iterations       INTEGER,
     -- When 1, the dispatched worker runs in a Ralph-style goal loop: an
     -- auxiliary judge re-evaluates the worker's response against the
     -- card title/body after each turn and feeds a continuation prompt
@@ -1265,6 +1278,7 @@ def create_task(
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
+    max_iterations: Optional[int] = None,
     completion_contract: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
@@ -1273,8 +1287,11 @@ def create_task(
     forces ``triage``; ``initial_status="blocked"`` parks it for human ops.
     ``idempotency_key``: an existing non-archived task with the key is returned
     instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
-    SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
-    worker model (provider requires model); ``reasoning_effort`` is independent.
+    SIGTERMs and re-queues. ``max_iterations``: this card's own iteration
+    budget, dispatched to the worker as ``HERMES_MAX_ITERATIONS``; ``None``
+    leaves the profile's ``agent.max_turns`` in charge. ``model_override``/
+    ``provider_override`` pin the worker model (provider requires model);
+    ``reasoning_effort`` is independent.
     ``creator_task_id``: inherit durable session/subscriptions independently of
     dependency edges; an explicit ``session_id`` still wins.
     ``project_source_task_id``: cross-profile fallback when ``project_id`` is not
@@ -1363,10 +1380,10 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, model_override, provider_override,
-                        reasoning_effort,
+                        skills, max_retries, max_iterations, model_override,
+                        provider_override, reasoning_effort,
                         goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1374,7 +1391,8 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
-                        _opt_int(max_retries), model_override, provider_override, reasoning_effort,
+                        _opt_int(max_retries), _opt_int(max_iterations),
+                        model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
                     ),
                 )

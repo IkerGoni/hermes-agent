@@ -359,6 +359,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    # Reject at the CLI rather than silently dropping: 0/negative would read as
+    # "unlimited" if it ever reached resolve_turn_limit, so an inert value here
+    # would be a lie about what the card asked for.
+    max_iterations = getattr(args, "max_iterations", None)
+    if max_iterations is not None and max_iterations < 1:
+        return _err(f"kanban: --max-iterations must be >= 1 (got {max_iterations}); "
+                    "omit it to inherit the profile's agent.max_turns.", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
@@ -369,6 +376,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
             max_retries=max_retries, model_override=getattr(args, "model_override", None),
+            max_iterations=max_iterations,
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
