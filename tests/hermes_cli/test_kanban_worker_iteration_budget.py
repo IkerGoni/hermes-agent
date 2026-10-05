@@ -176,8 +176,10 @@ def test_non_positive_card_max_iterations_adds_no_flag(monkeypatch, tmp_path):
 def test_flag_does_not_disturb_the_other_worker_pins(monkeypatch, tmp_path):
     """Adding the budget must not reorder or drop the existing argv contract.
 
-    ``--max-turns`` goes in with the other per-card pins, before ``chat``; a misplaced
-    flag would be swallowed as the subcommand's argument instead of a budget.
+    ``--max-turns`` goes in with the other per-card pins but *after* ``chat``:
+    it is declared only on the chat subparser, so in the pre-``chat`` block
+    argparse read ``60`` as the subcommand and the worker died before running a
+    turn (t_cbdfd12b). See test_kanban_worker_max_turns_argv_order.py.
     """
     _profile_env(monkeypatch, tmp_path)
 
@@ -196,8 +198,8 @@ def test_flag_does_not_disturb_the_other_worker_pins(monkeypatch, tmp_path):
     assert cmd[cmd.index("-m") + 1] == "some-model"
     assert cmd[cmd.index("--reasoning") + 1] == "high"
     assert cmd[cmd.index("--skills") + 1] == "a-skill"
-    # The flag lands before the subcommand, so `chat` still parses it.
-    assert cmd.index("--max-turns") < cmd.index("chat")
+    # Chat-only flag: it must follow the subcommand it belongs to.
+    assert cmd.index("--max-turns") > cmd.index("chat")
     assert cmd[-1] == f"work kanban task {task.id}"
 
 

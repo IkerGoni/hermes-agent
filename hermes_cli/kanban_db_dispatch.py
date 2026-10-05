@@ -2788,19 +2788,26 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     # model at a different depth.
     if task.reasoning_effort:
         cmd.extend(["--reasoning", task.reasoning_effort])
+    worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
+    if worker_toolsets:
+        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+    cmd.extend(["chat"])
     # Per-card iteration budget, as a CLI arg rather than HERMES_MAX_ITERATIONS:
     # ``_init_turn_limits`` resolves the cap as "CLI arg > config > env var", so
     # a profile that already sets ``agent.max_turns`` (the common case — 220 on the
     # builder profile) would silently shadow the env var and the card would get the
     # profile default anyway. The flag is the only channel that actually wins, and it
     # shows up in ``ps`` next to the worker's other pins.
+    #
+    # It MUST come after ``chat``: ``--max-turns`` is declared only on the chat
+    # subparser, never on the top-level one, so in the pre-``chat`` block argparse
+    # read the value as the subcommand and every such worker died with
+    # ``hermes: '60' is not a `hermes` command`` before running a turn — twice on
+    # t_c89adccb, burning its whole retry budget on a card that never started.
     card_budget = _worker_iteration_budget_arg(task.max_iterations)
     if card_budget is not None:
         cmd.extend(["--max-turns", card_budget])
-    worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
-    if worker_toolsets:
-        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
+    cmd.extend(["-q", f"work kanban task {task.id}"])
     # goal_mode rides the same `-q` path: cli.py runs the judge loop there too, so the
     # worker log keeps its live tool feed (forcing -Q blanked it).
     return cmd
