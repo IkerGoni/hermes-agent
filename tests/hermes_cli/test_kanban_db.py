@@ -1586,7 +1586,12 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    # Asserted as a shape, not a literal: the module form also carries ``-P`` so
+    # a workspace inside the Hermes repo cannot shadow the install's own modules
+    # (tests/hermes_cli/test_kanban_worker_cwd_shadowing.py).
+    resolved = kbd._resolve_hermes_argv()
+    assert resolved[0] == sys.executable
+    assert resolved[resolved.index("-m") + 1] == "hermes_cli.main"
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]

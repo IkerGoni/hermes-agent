@@ -2491,8 +2491,40 @@ def _rotate_worker_log(
 
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    console-script target — there is no top-level ``hermes`` package).
+
+    ``-P`` keeps the worker's workspace off ``sys.path``. ``-m`` otherwise puts
+    the cwd in front of everything, and a workspace that *is* a Hermes checkout
+    (any kanban card with ``--workspace worktree`` inside the install's own
+    repository) then imports its versioned ``hermes_bootstrap.py`` instead of
+    the install's. ``_root`` resolves to the worktree, PM hashes that worktree
+    into a different ``installs/<key>`` with nothing committed there, and the
+    worker exits 1 at boot with ``no dependency environment is committed for
+    this install`` — naming ``hermes pm repair``, which cannot help, because the
+    install does have one. The cwd carries no imports a worker needs: the module
+    form is made importable by ``_propagate_module_import_root``'s PYTHONPATH
+    pin, and ``hermes_bootstrap``'s own ``harden_import_path`` puts the install
+    root at the front of ``sys.path`` anyway.
+    """
+    return [sys.executable, "-P", "-m", "hermes_cli.main"]
+
+
+def _module_hermes_argv_is_module_form(cmd: list[str]) -> bool:
+    """Does this argv run ``hermes_cli.main`` with ``-m``?
+
+    Delegates to ``hermes_state_holders``' argv scanner, the one that already
+    understands interpreter options (``-P``, ``-W``, ``-X``, ``--jit``, and
+    clustered short flags), so a new interpreter option cannot make this
+    dispatcher disagree with the process-identity code about what a worker is.
+    """
+    if not cmd:
+        return False
+    from hermes_state_holders import _looks_like_python_executable, _python_execution_target
+
+    if not _looks_like_python_executable(os.path.basename(cmd[0])):
+        return False
+    target = _python_execution_target(cmd)
+    return target == ("module", "hermes_cli.main")
 
 
 def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
@@ -2507,8 +2539,13 @@ def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
     root is version-safe to propagate; ``hermes_cli.main``'s own bootstrap
     then owns dependency activation as usual. A resolved shim path owns its
     imports and is left alone. Same pin cron's external worker uses (#112729).
+
+    The argv carries ``-P`` (see :func:`_module_hermes_argv`), so the module
+    target is located by scanning the interpreter options rather than a fixed
+    ``cmd[1:3]`` window: pinning by index alone would drop this pin for every
+    worker, which is the failure this function exists to prevent.
     """
-    if cmd[1:3] != ["-m", "hermes_cli.main"]:
+    if not _module_hermes_argv_is_module_form(cmd):
         return
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
 
