@@ -196,6 +196,14 @@ _SPECS = [
                   f"first failure (no retries), --max-retries 3 allows two retries. Omit to use "
                   f"the dispatcher's kanban.failure_limit config (default "
                   f"{kb.DEFAULT_FAILURE_LIMIT})."),
+        _arg("--max-iterations", type=int, metavar="N",
+             help="Per-task iteration budget — the cap that decides when a worker "
+                  "is done. Omit to inherit the profile's agent.max_turns. Raise it for "
+                  "a card you can see needs more room than that default (a full test "
+                  "suite, a long refactor): a card that exhausts its budget can still be "
+                  "reported failed with its work committed-but-revoked, or correct work "
+                  "lost uncommitted. Distinct from --goal-max-turns, which caps turns of "
+                  "a --goal judge loop."),
         _arg("--model", dest="model_override",
              help="Pin the worker to this model (passed as -m <model>) without "
                   "changing the profile's configured model. Combine with --provider "
