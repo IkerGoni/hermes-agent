@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- reconciliation port of reviewed cards t_1f64d6e2/t_cbdfd12b (per-card iteration budget + argv order, +36 lines); offsetting the growth would mean relocating `_worker_argv`/`_default_spawn` in the same card, a larger unreviewed refactor of the live dispatcher — flagged in the handoff for a human decision
 """Dispatcher: crash/stale/orphan detection, failure accounting and the respawn circuit breaker, memory-aware concurrency caps, the one-shot ``dispatch_once`` pass, worker spawning (``_default_spawn``), worker-log rotation and the long-lived ``run_daemon`` loop.
 
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached

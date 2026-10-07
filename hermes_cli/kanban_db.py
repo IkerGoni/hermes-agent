@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- reconciliation port of card t_1f64d6e2 (max_iterations column, dataclass field, create_task plumbing: +18 lines); offsetting the growth would mean moving an existing top-level block out of the 4.6k-line DB facade in the same card — flagged in the handoff for a human decision
 """SQLite-backed Kanban board shared across profiles (the cross-profile coordination primitive).
 
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards
