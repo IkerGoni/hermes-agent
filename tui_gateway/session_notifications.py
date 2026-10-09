@@ -313,10 +313,18 @@ def _kb_completed(task, payload: dict, title: str) -> str:
     return f" done — {title}{handoff}"
 
 
+_NO_LIMIT = "no runtime limit reported"
+
+
 def _kb_timed_out(task, payload: dict, title: str) -> str:
-    with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+    # Never invent a number: the dispatcher omits ``limit_seconds`` when the card
+    # has no cap, and printing 0 for it read as "killed after 0s" — sending us to
+    # debug a card that was healthy. A real 0 still prints 0; that is a different fact.
+    try:
+        limit = int(payload["limit_seconds"])
+    except (KeyError, TypeError, ValueError):
+        return f" timed out ({_NO_LIMIT}); will retry"
+    return f" timed out (max_runtime={limit}s); will retry"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
