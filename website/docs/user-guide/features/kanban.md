@@ -26,6 +26,33 @@ This is a reporting opportunity, not a guarantee that a model will heed the noti
 Ordinary conversations and delegated children do not inherit the automatic Kanban
 checkpoint; their iteration warning remains opt-in.
 
+### Per-card iteration budgets (`--max-iterations`)
+
+The cap above is normally a profile-wide `agent.max_turns`, so every card inherits one
+number tuned for an average card. A card that needs more room than that can ask for it
+directly:
+
+```bash
+hermes kanban create "Run the full suite and land the fix" \
+  --assignee builder --max-iterations 600
+```
+
+The dispatcher passes the card's budget to the worker as `--max-turns`, the same channel
+an operator would use by hand, so it outranks the profile's `agent.max_turns` instead
+of being shadowed by it. Omit the flag and the card behaves exactly as before, inheriting
+the profile default.
+
+This matters more than it sounds, because exhausting the cap does not merely stop early —
+it ends the card. A worker that delivers its work, commits, and calls `kanban_complete`
+can still have its run revoked with `gave_up: Iteration budget exhausted (N/N)` if the
+cap lands first, so a finished card reads as a failure; a worker cut off before
+committing loses correct work entirely. Raising the budget for a card you can see is
+long (a full test suite, a wide refactor) is the reliable fix. Set it high enough to
+finish, not as a substitute for scoping the card down.
+
+`--max-iterations` is unrelated to `--goal-max-turns`: the latter caps the judge loop of
+a `--goal` card, the former caps the worker's own tool-calling turns.
+
 ### Two surfaces: the model talks through tools, you talk through the CLI
 
 The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
@@ -947,6 +974,7 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--priority N] [--triage] [--idempotency-key KEY]
                                 [--max-runtime 30m|2h|1d|<seconds>]
                                 [--max-retries N]
+                                [--max-iterations N]
                                 [--goal] [--goal-max-turns N]
                                 [--skill <name>]...
                                 [--json]
