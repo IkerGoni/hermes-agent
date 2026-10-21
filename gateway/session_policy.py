@@ -72,13 +72,14 @@ SELECTION_KEYS = ('default', 'provider', 'base_url', 'api_mode', 'selection_prof
 BYPASS_FIELDS = ('safe_mode', 'ignore_user_config')
 _ACTIVE_POLICY: ContextVar = ContextVar('local_session_policy', default=None)
 _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (policy, live) for a turn
-# Creation label -> agent surface. ``tool`` (third-party integrations, ``hermes chat --source tool``) and
-# ``oneshot`` (finite ``chat -q`` / ``-z`` runs) run as the CLI but keep their own stored label, so human
-# pickers hide them (INTERNAL_LISTING_SOURCES).
-SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
-# ``tool`` and ``oneshot`` stay stored under their own labels so pickers can hide them.
+# Creation label -> agent surface. ``tool`` (third-party integrations, ``hermes chat --source tool``),
+# ``oneshot`` (finite ``chat -q`` / ``-z`` runs) and ``kanban`` (board workers) run as the CLI but keep
+# their own stored label, so human pickers hide them (INTERNAL_LISTING_SOURCES).
+SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli',
+           'kanban': 'cli'}
+# ``tool``, ``oneshot`` and ``kanban`` stay stored under their own labels so pickers can hide them.
 # Every other creation label is rewritten to ``source='local'`` on peer refresh.
-_KEEP_STORED_LABEL = frozenset({'tool', 'oneshot'})
+_KEEP_STORED_LABEL = frozenset({'tool', 'oneshot', 'kanban'})
 STORED_AS_LOCAL = frozenset(SURFACES) - _KEEP_STORED_LABEL
 # Routing labels and the accounting placeholder: never a creating surface.
 _NOT_A_SURFACE = frozenset({None, '', 'local', 'unknown'})
