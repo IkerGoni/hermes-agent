@@ -50,8 +50,10 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         build_kanban_policy(connection, params, config)
     from gateway.session_policy import build_policy
-    with pytest.raises(RuntimeStoreError, match='invalid_params'):
-        build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
+    # The label the dispatcher writes is a creation surface: a kanban worker's create is admitted
+    # as the CLI, never refused as an unknown source.
+    created = build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
+    assert created.source == 'kanban' and created.platform == 'cli'
 
 
 @pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash'])
