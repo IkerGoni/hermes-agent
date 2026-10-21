@@ -2827,12 +2827,16 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     # profile default anyway. The flag is the only channel that actually wins, and it
     # shows up in ``ps`` next to the worker's other pins.
     card_budget = _worker_iteration_budget_arg(task.max_iterations)
-    if card_budget is not None:
-        cmd.extend(["--max-turns", card_budget])
     worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
+    cmd.extend(["chat"])
+    # ``--max-turns`` lives on the ``chat`` subparser alone; before ``chat`` the
+    # top-level parser reads its value as a command name and exits 2, so it goes
+    # immediately after the subcommand it belongs to.
+    if card_budget is not None:
+        cmd.extend(["--max-turns", card_budget])
+    cmd.extend(["-q", f"work kanban task {task.id}"])
     # goal_mode rides the same `-q` path: cli.py runs the judge loop there too, so the
     # worker log keeps its live tool feed (forcing -Q blanked it).
     return cmd

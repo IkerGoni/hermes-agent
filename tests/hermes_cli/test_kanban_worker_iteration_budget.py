@@ -81,6 +81,30 @@ def _max_turns_flag(cmd: list) -> Optional[str]:
     return cmd[cmd.index("--max-turns") + 1] if "--max-turns" in cmd else None
 
 
+def _parsed_worker_args(cmd: list):
+    """Feed the worker's argv to the REAL CLI parser instead of a hand-rolled scan.
+
+    ``--max-turns`` exists only on the ``chat`` subparser, so a ``--max-turns`` placed
+    with the pre-subcommand pins is not "a flag in an odd spot": the top-level parser
+    reads ``30`` as a command name and exits 2 — the worker never reaches a turn. The
+    previous tests only looked the value up in the list, which cannot tell a parsed
+    budget from a token argparse rejects.
+
+    ``-p/--profile`` never reaches argparse: ``main._apply_profile_override`` strips it
+    from ``sys.argv`` beforehand, so the test removes the same pair and hands the rest
+    over verbatim.
+    """
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, _chat_parser = build_top_level_parser()
+    argv = list(cmd[1:])
+    for index, token in enumerate(argv[:-1]):
+        if token in ("-p", "--profile"):
+            del argv[index:index + 2]
+            break
+    return parser.parse_args(argv)
+
+
 def _profile_env(monkeypatch, tmp_path) -> None:
     root = tmp_path / ".hermes"
     (root / "profiles" / "w").mkdir(parents=True)
@@ -174,10 +198,10 @@ def test_non_positive_card_max_iterations_adds_no_flag(monkeypatch, tmp_path):
 
 
 def test_flag_does_not_disturb_the_other_worker_pins(monkeypatch, tmp_path):
-    """Adding the budget must not reorder or drop the existing argv contract.
+    """Adding the budget must preserve the existing worker pins and query.
 
-    ``--max-turns`` goes in with the other per-card pins, before ``chat``; a misplaced
-    flag would be swallowed as the subcommand's argument instead of a budget.
+    ``--max-turns`` belongs after ``chat`` because only that subparser defines it;
+    the model, provider, skills and reasoning pins retain their existing positions.
     """
     _profile_env(monkeypatch, tmp_path)
 
@@ -196,9 +220,54 @@ def test_flag_does_not_disturb_the_other_worker_pins(monkeypatch, tmp_path):
     assert cmd[cmd.index("-m") + 1] == "some-model"
     assert cmd[cmd.index("--reasoning") + 1] == "high"
     assert cmd[cmd.index("--skills") + 1] == "a-skill"
-    # The flag lands before the subcommand, so `chat` still parses it.
-    assert cmd.index("--max-turns") < cmd.index("chat")
+    # `--max-turns` belongs after the subcommand: it exists only on the `chat`
+    # parser, so before `chat` argparse reads its value as a command and exits 2.
+    assert cmd.index("--max-turns") > cmd.index("chat")
     assert cmd[-1] == f"work kanban task {task.id}"
+
+
+def test_the_real_parser_reads_the_budget_and_the_overrides(monkeypatch, tmp_path):
+    """The argv the dispatcher spawns is one the CLI accepts, with the pins intact.
+
+    This is the regression the list-scanning tests could not see: `--max-turns 30`
+    before `chat` produced rc=2 ("'30' is not a hermes command"), so a card pinned to
+    30 iterations and `gpt-6.1-sol`/`openai-codex` died in argument parsing before it
+    could make a single tool call.
+    """
+    _profile_env(monkeypatch, tmp_path)
+
+    from hermes_cli import kanban_db as kb
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    task = _make_task(kb, max_iterations=30)
+    task.model_override = "gpt-6.1-sol"
+    task.provider_override = "openai-codex"
+    captured = _capture_spawn(kb, monkeypatch, str(workspace), task)
+
+    args = _parsed_worker_args(captured["cmd"])
+
+    assert args.command == "chat"
+    assert args.max_turns == 30
+    assert args.model == "gpt-6.1-sol"
+    assert args.provider == "openai-codex"
+    assert args.query == f"work kanban task {task.id}"
+
+
+def test_the_real_parser_leaves_the_budget_unset_without_a_card_override(monkeypatch, tmp_path):
+    """No card budget -> the namespace carries no value, so the profile decides."""
+    _profile_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
+
+    from hermes_cli import kanban_db as kb
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    captured = _capture_spawn(kb, monkeypatch, str(workspace), _make_task(kb))
+
+    assert _parsed_worker_args(captured["cmd"]).max_turns is None
 
 
 # ---------------------------------------------------------------------------
