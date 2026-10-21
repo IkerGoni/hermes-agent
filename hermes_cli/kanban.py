@@ -959,10 +959,18 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    # Reject at the CLI rather than silently dropping: 0/negative would read as
+    # "unlimited" if it ever reached resolve_turn_limit, so an inert value here
+    # would be a lie about what the card asked for.
+    max_iterations = getattr(args, "max_iterations", None)
+    if max_iterations is not None and max_iterations < 1:
+        return _err(f"kanban edit: --max-iterations must be >= 1 (got {max_iterations}); "
+                    "omit it to keep the card's current budget.", 2)
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result, max_iterations)):
+        return _err("kanban edit: provide --title, --body, --priority, --result, or "
+                    "--max-iterations", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
@@ -970,6 +978,7 @@ def _cmd_edit(args: argparse.Namespace) -> int:
         ok = kb.edit_task(
             conn, args.task_id, title=title, body=body, priority=priority,
             result=result, summary=summary, metadata=metadata,
+            max_iterations=max_iterations,
         )
     return _ok_or_err(
         ok,

@@ -570,3 +570,40 @@ KANBAN_LINK_SCHEMA = _schema(
     },
     ["parent_id", "child_id"],
 )
+
+KANBAN_EDIT_SCHEMA = _schema(
+    "kanban_edit",
+    (
+        "Edit fields of a task that already exists — its title, body, priority "
+        "or its iteration budget. The budget edit is the point of this tool: a "
+        "card that ran out of turns ('Iteration budget exhausted (N/N)') can be "
+        "given more room and re-dispatched, instead of being recreated and "
+        "losing the work it already did. The new budget applies on the next "
+        "dispatch. Every field is optional; pass only what should change."
+    ),
+    {
+        "task_id": _prop("string", (
+            "Task id to edit. If omitted, defaults to HERMES_KANBAN_TASK from "
+            "the env — the task the dispatcher spawned you to work on. That "
+            "default only exists for a dispatcher-spawned worker; any other "
+            "caller has no default and must pass an explicit task_id (use "
+            "kanban_list to discover ids)."
+        )),
+        "title": _prop("string", "New title for the task."),
+        "body": _prop("string", "New body (the task's opening spec) for the task."),
+        "priority": _prop("integer", (
+            "New priority. Higher = picked sooner when multiple ready tasks "
+            "share an assignee."
+        )),
+        "max_iterations": _prop("integer", (
+            "New per-task iteration budget — the agent-turn cap that decides "
+            "when a worker is done, dispatched to the worker as --max-turns. "
+            "Raise it for a card that exhausted its budget; lower it for a card "
+            "that should not run long. Must be >= 1: 0/negative would read as "
+            "'unlimited' and are rejected, not ignored. Omit it to leave the "
+            "card's current budget untouched (a card that never had one keeps "
+            "inheriting the profile's agent.max_turns)."
+        )),
+    },
+    ["task_id"],
+)

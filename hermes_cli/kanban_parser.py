@@ -318,6 +318,14 @@ _SPECS = [
         _arg("--body", help="Replace the task body"),
         _arg("--priority", type=int, help="Replace the task priority"),
         _arg("--result", help="Backfilled task result text for a done task"),
+        _arg("--max-iterations", type=int, metavar="N",
+             help="Re-pin the card's iteration budget — the cap that decides when a "
+                  "worker is done. Use it to give an EXISTING card more room than "
+                  "the budget it was created with (a card that ran out of turns: "
+                  "'Iteration budget exhausted (N/N)'), or a tighter cap for a card "
+                  "that should not run long. Takes effect on the next dispatch. "
+                  "Must be >= 1; omit it to keep the card's current budget (or the "
+                  "profile's agent.max_turns when the card never had one)."),
         *_STEP_HANDOFF,
     ], help="Edit task fields or recovery fields on an already-completed task"),
     _cmd("block", [

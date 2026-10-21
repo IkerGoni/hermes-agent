@@ -22,7 +22,8 @@ from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
-    KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
+    KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_EDIT_SCHEMA, KANBAN_HEARTBEAT_SCHEMA,
+    KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
     KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
@@ -1289,6 +1290,59 @@ def _handle_link(args: dict, **kw) -> str:
                    **({"gated_by": parent_id} if gated else {}))
 
 
+@_kanban_handler("kanban_edit")
+def _handle_edit(args: dict, **kw) -> str:
+    """Edit an existing card's fields — its title, body, priority or its iteration
+    budget (the cap the dispatcher hands the worker as ``--max-turns``).
+
+    The budget is why this tool exists: a card that ran out of turns
+    ("Iteration budget exhausted (N/N)") had no way to be given more room
+    except by being recreated, which throws away the work it already did.
+    Omitted fields are left exactly as they are — editing a title must never
+    clear a budget.
+    """
+    _reject_delegated_child_mutation("kanban_edit")
+    tid = _require_task_id(args)
+    _enforce_worker_task_ownership(tid)
+    title = args.get("title")
+    body = args.get("body")
+    priority = args.get("priority")
+    raw_max_iterations = args.get("max_iterations")
+    max_iterations = None
+    if raw_max_iterations is not None:
+        try:
+            max_iterations = int(raw_max_iterations)
+        except (TypeError, ValueError):
+            raise _Reject(
+                f"kanban_edit: max_iterations must be an integer (got {raw_max_iterations!r})."
+            )
+        # A float would be silently truncated by int() (220.9 -> 220), which is
+        # not a budget anybody asked for.
+        if isinstance(raw_max_iterations, float) and raw_max_iterations != max_iterations:
+            raise _Reject(
+                f"kanban_edit: max_iterations must be a whole number (got {raw_max_iterations!r})."
+            )
+        # 0/negative would read as "unlimited" downstream (resolve_turn_limit's
+        # TURN_LIMIT_UNLIMITED), so reject instead of storing an inert value.
+        _check(
+            max_iterations >= 1,
+            f"kanban_edit: max_iterations must be >= 1 (got {max_iterations}); omit it to "
+            "keep the card's current budget.",
+        )
+    if title is None and body is None and priority is None and max_iterations is None:
+        raise _Reject(
+            "kanban_edit: provide at least one of title, body, priority or max_iterations. "
+            "Nothing changed."
+        )
+    with _board(args.get("board")) as (kb, conn):
+        ok = kb.edit_task(
+            conn, tid,
+            title=title, body=body, priority=priority, max_iterations=max_iterations,
+        )
+        _check(ok, f"could not edit {tid} (unknown id)")
+        return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("title", "priority", "max_iterations")))
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
 # kanban_list / kanban_unblock route the board and are hidden from task workers.
@@ -1307,6 +1361,7 @@ _TOOLS = (
     ("kanban_attach_url", KANBAN_ATTACH_URL_SCHEMA, _handle_attach_url, "📎"),
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
+    ("kanban_edit", KANBAN_EDIT_SCHEMA, _handle_edit, "✏️"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
 

@@ -3067,10 +3067,30 @@ def edit_task(
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    max_iterations: Optional[int] = None,
 ) -> bool:
-    """Edit task fields, optionally backfilling a completed task's result."""
+    """Edit task fields, optionally backfilling a completed task's result.
+
+    ``max_iterations`` re-pins the card's own iteration budget (the cap the
+    dispatcher hands the worker as ``--max-turns``). It is the only way to
+    change that budget on a card that already exists: a card that ran out of
+    turns under a too-small cap otherwise has to be recreated, and the
+    work it had already done is lost with it. ``None`` leaves the stored
+    budget untouched — an edit of the title must never silently clear it.
+    A budget below 1 is rejected: ``resolve_turn_limit`` reads 0/negative as
+    "unlimited" (``TURN_LIMIT_UNLIMITED``), so storing one would hand the
+    worker an unbounded run instead of the budget the caller asked for.
+    """
+    if max_iterations is not None and int(max_iterations) < 1:
+        raise ValueError(
+            f"max_iterations must be >= 1 (got {max_iterations}); omit it to keep the "
+            "card's current budget (or the profile's agent.max_turns)."
+        )
     changed_fields = [
-        field for field, value in (("title", title), ("body", body), ("priority", priority))
+        field for field, value in (
+            ("title", title), ("body", body), ("priority", priority),
+            ("max_iterations", max_iterations),
+        )
         if value is not None
     ]
     with write_txn(conn):
@@ -3079,7 +3099,10 @@ def edit_task(
             return False
         assignments = []
         params = []
-        for field, value in (("title", title), ("body", body), ("priority", priority)):
+        for field, value in (
+            ("title", title), ("body", body), ("priority", priority),
+            ("max_iterations", max_iterations),
+        ):
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)
